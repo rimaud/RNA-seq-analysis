@@ -1,0 +1,271 @@
+# **Import Input count**
+
+All samples were processed, and the quantification with the raw data is stored in the file rawcounts.csv along with the metadata. The output files from RSEM, specifically the genes.results, will be imported into R to generate the count matrix: the first column contains the gene IDs, and the other columns contain the raw counts of gene expression levels for each sample.
+
+The row names in the colData will be the unique sample IDs, while the columns should contain the conditions being tested for differential expression, along with any effects to be controlled.
+
+```{r}
+#install.packages("readr")
+library(readr)
+
+rawcount <- read.table(file = "/media/prospecmol/disk4/Minicurso/Data/rawcounts.txt", header = TRUE, row.names = 1)
+
+coldata <- read_table("/media/prospecmol/disk4/Minicurso/Data/coldata.txt")
+colnames(coldata) <- c("Sample", "Condition")
+
+coldata$Condition <- as.factor(coldata$Condition)
+```
+
+# Import data to DEseq2
+
+To create the count matrix in DESeq2 using the function `DESeqDataSetFromMatrix()`, you need raw_count(genes × samples) and coldata( A dataframe with experimental)
+
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  #install.packages("BiocManager")
+#BiocManager::install("DESeq2")
+library(DESeq2)
+
+dds <- DESeqDataSetFromMatrix(countData=rawcount, colData=coldata, design=~Condition)
+```
+
+# **Pre-filtering**
+
+```{r}
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+```
+
+# **Differential expression analysis**
+
+DESeq2 will perform Estimation of size factors, estimation of dispersion, Negative Binomial and Correct p values for multiple testing using the Benjamini and Hochberg method. According to Love et al., R automatically chooses a reference level for factors based on alphabetical order. However, in the context of differential expression analysis, we typically want to set a specific reference level, such as control, for comparison. To explicitly set the reference level to "control" (rather than relying on alphabetical order), you can use the `relevel()` function in R.
+
+```{r}
+dds$Condition <- relevel(dds$Condition, ref = "Control")
+dds <- DESeq(dds)
+
+#List the names of the coefficients and choose your comparison
+resultsNames(dds)
+res <- results(dds, contrast = c("Condition", "PS", "Control"), alpha = 0.05)
+
+# Filter significantly upregulated genes
+ressi <- res[which(res$padj < 0.05 & res$log2FoldChange > 1), ]
+
+# Filter significantly downregulated genes
+resip <- res[which(res$padj < 0.05 & res$log2FoldChange < -1), ]
+
+# Combine significantly upregulated and downregulated genes
+resSig <- rbind(ressi, resip)
+
+# Save the full results to a CSV file
+write.csv(as.data.frame(res), file = "full_results.csv", row.names = TRUE)
+
+# Save the filtered significant results to a CSV file
+write.csv(as.data.frame(resSig), file = "significant_results.csv", row.names = TRUE)
+
+```
+
+# **Log fold change shrinkage**
+
+It is used to improve the visualization and classification of differentially expressed genes. we specify to use the apeglm method for effect size shrinkage (Zhu, Ibrahim, and Love 2018), which improves on the LFC estimate.
+
+```{r}
+# Apply shrinkage to the Log2 Fold Change values
+#BiocManager::install("apeglm")
+library(apeglm)
+
+resLFC <- lfcShrink(dds, coef = "Condition_PS_vs_Control", type = "apeglm")
+
+# Filter significantly regulated genes after shrinkage
+resLFCsi <- resLFC[which(resLFC$padj < 0.05 & resLFC$log2FoldChange > 1), ]  
+resLFCsip <- resLFC[which(resLFC$padj < 0.05 & resLFC$log2FoldChange < -1), ] 
+resLFCSig <- rbind(resLFCsi, resLFCsip)  
+
+# Save the results with shrinkage to CSV files
+#write.csv(as.data.frame(resLFC), file = "resLFC_shrinkage.csv", row.names = TRUE)  
+#write.csv(as.data.frame(resLFCSig), file = "resLFCSig_shrinkage.csv", row.names = TRUE) 
+
+png("p-value distribution.png", width = 900, height = 700)  
+hist(resLFC$pvalue, breaks = 60, col = 'grey', main = 'p-value distribution', xlab = 'p-values')
+dev.off()
+
+```
+
+# **Exploring Results and Visualization**
+
+## Volcano plots
+
+```{r}
+#Set your log-fold-change and p-value thresholds
+lfc <- 1         
+pval <- 0.05     
+
+# Criar um data frame com os valores log2FoldChange e padj dos resultados
+data <- data.frame(
+  logFC = resLFC$log2FoldChange,     
+  logpvalue = -log10(resLFC$padj)    
+)
+
+png("volcano_plot.png", width = 800, height = 700)
+plot(
+  data, pch = 16, cex = 0.4, col = 'black', 
+  xlab = expression(log[2]~Fold~Change),   
+  ylab = expression(-log[10]~Adjusted~pvalue), 
+  main = "Volcano Plot"
+)
+
+# Highlight significant genes (|log2FoldChange| > lfc and pval < 0.05)
+signGenes <- (abs(data$logFC) > lfc & data$logpvalue > -log10(pval))
+points(data[signGenes, ], pch = 16, cex = 0.5, col = "red")
+
+dev.off()
+```
+
+## **MA-plot**
+
+The MA represents the difference between two conditions (fold-change) and the average intensity of the expression.
+
+```{r}
+pdf("MA_plots_res.pdf")
+plotMA(res,
+       ylim = c(-10, 10), 
+       colSig = "red", 
+       colNonSig = "blue")
+title(main = "MA Plot - res")
+dev.off()
+
+pdf("MA_plots_rLC.pdf")
+plotMA(resLFC,
+       ylim = c(-10, 10), 
+       cex = 0.8, 
+       lwd = 2, 
+       colSig = "red", 
+       colNonSig = "black")
+title(main = "MA Plot resLFC")
+dev.off()
+```
+
+## **Principal component plot of the samples**
+
+Used in data analysis to visualize and understand the variation in a dataset.
+
+```{r}
+#install.packages("ggplot2")
+library(ggplot2)
+
+# Extracting transformed values
+vsd <- vst(dds, blind = FALSE)
+
+# Generate the PCA plot
+pca_data <- plotPCA(vsd, intgroup = "Condition", returnData = TRUE)
+percentVar <- round(100 * attr(pca_data, "percentVar"))
+
+pdf("Pca.pdf")
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Condition)) +
+  geom_point(size = 3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  ggtitle("PCA Plot") +
+  theme_minimal()
+dev.off()
+
+```
+
+## **Pheatmap**
+
+```{r}
+#install.packages("pheatmap")
+library(pheatmap)
+
+# Expression matrix transformed with vst
+vsd_matrix <- assay(vsd) 
+
+# Select significant genes (from res or resLFC)
+selected_genes <- rownames(resSig) 
+heatmap_data <- vsd_matrix[selected_genes, ]  
+
+# Select 100 significant genes (from res or resLFC)
+selected_genes <- head(order(rowMeans(heatmap_data), decreasing = TRUE), 100)
+heatmap_data <- heatmap_data[selected_genes, ]
+
+# Add annotations
+annotation <- as.data.frame(colData(vsd)[, "Condition", drop = FALSE])
+rownames(annotation) <- colnames(vsd_matrix)
+
+# Generate the heatmap
+png("heatmap_100_significant_genes.png", width = 1500, height = 1200)  
+pheatmap(heatmap_data,
+         cluster_rows = TRUE,  
+         cluster_cols = FALSE,  
+         show_rownames = FALSE,
+         annotation_col = annotation,  
+         scale = "row", 
+         color = colorRampPalette(c("blue", "white", "red"))(50),
+         main = "Heatmap - 100 Significant Genes",
+         show_colnames = FALSE,  
+         colnames = FALSE)  
+dev.off()
+
+
+
+```
+
+### Enrichment Analysis
+
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+  #  install.packages("BiocManager")
+
+#BiocManager::install(c("clusterProfiler", "org.Hs.eg.db", "pathview"))
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(pathview)
+
+
+# Convert gene IDs
+gene_list <- rownames(resSig)
+
+gene_up <- rownames(resSig[which((resSig$padj < 0.05) & (resSig$log2FoldChange > 1)), ])
+gene_down <- rownames(resSig[which((resSig$padj < 0.05) & (resSig$log2FoldChange < -1)), ])
+
+gene_id <- bitr(gene_list, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db, drop = TRUE)
+gene_up_id <- bitr(gene_up, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db, drop = TRUE)
+gene_down_id <- bitr(gene_down, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db, drop = TRUE)
+
+# Enrichment analysis
+go_results <- enrichGO(gene = gene_id$ENTREZID, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "BP", pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.05)
+
+go_enrich_up <- enrichGO(gene = gene_up_id$ENTREZID, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "BP", pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.05)
+
+go_enrich_down <- enrichGO(gene = gene_down_id$ENTREZID, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "BP", pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.05)
+
+# Save plots to PDF
+pdf(file = "Enrichment_GO.pdf", width = 8, height = 10)
+print(dotplot(go_enrich_up, showCategory = 15) + ggtitle("Enrichment GO (Up-Regulated)"))
+print(dotplot(go_enrich_down, showCategory = 15) + ggtitle("Enrichment GO (Down-Regulated)"))
+print(dotplot(go_results, showCategory = 15) + ggtitle("Enrichment GO (All Genes)"))
+dev.off()
+
+# KEGG
+kegg_results <- enrichKEGG(gene = gene_id$ENTREZID,  organism     = "hsa",  
+                           pvalueCutoff = 0.05)
+
+kegg_up <- enrichKEGG(gene = gene_up_id$ENTREZID,  organism     = "hsa",  
+                           pvalueCutoff = 0.05)
+
+kegg_down <- enrichKEGG(gene = gene_down_id$ENTREZID,  organism     = "hsa",  
+                           pvalueCutoff = 0.05)
+
+
+# Save plots to PDF
+pdf(file = "Enrichment_Kegg.pdf", width = 10, height = 8)
+print(barplot(kegg_up, showCategory = 10) + ggtitle("Enrichment KEGG (Up-Regulated)"))
+print(barplot(kegg_down, showCategory = 10) + ggtitle("Enrichment KEGG (Down-Regulated)"))
+print(barplot(kegg_results, showCategory = 10) + ggtitle("Enrichment KEGG (All Genes)"))
+dev.off()
+```
+
+```{r}
+sessionInfo()
+```
