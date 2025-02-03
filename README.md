@@ -2,8 +2,6 @@
 
 This repository provides a complete RNA-Seq data analysis pipeline using the DESeq2 package, covering all essential steps of the process. It includes gene expression quantification and data normalization to correct for technical variations. Differential gene expression (DEG) analysis is performed to identify genes that are differential expressed between experimental conditions, with results visualized through PCA and volcano plots. Finally, additional visualizations are generated to explore changes in gene expression and functional analyses, such as biological pathway enrichment, providing a comprehensive interpretation of the RNA-Seq data.
 
-**Correspondence**: rimauddjido\@gmail.com
-
 The data used in this analysis comes from a publicly available experiment in the NCBI BioProject database under the accession
 
 (GEO: **GSE54456**).
